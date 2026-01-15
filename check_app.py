@@ -54,49 +54,55 @@ def check_google_play(raw_link):
 
 def main():
     start_time = time.time()
-    print(f"🎬 === Google Play 巴西区监控启动 ({datetime.now().strftime('%H:%M:%S')}) ===")
+    print(f"🎬 === Google Play 巴西区监控诊断模式启动 ({datetime.now().strftime('%H:%M:%S')}) ===")
     
     token = get_tenant_token()
-    if not token: return
+    if not token: 
+        print("❌ 无法获取 token，请检查 APP_ID 和 SECRET")
+        return
     headers = {"Authorization": f"Bearer {token}"}
 
-    # 【诊断步骤】尝试读取更大范围的数据 (A到Z列)
-    data_url = f"{DOMAIN_GLOBAL}/open-apis/sheets/v2/spreadsheets/{SS_TOKEN}/values/{DATA_SHEET_ID}!A1:Z10"
+    # 尝试读取 A 到 Z 列，覆盖可能的同步偏移
+    data_url = f"{DOMAIN_GLOBAL}/open-apis/sheets/v2/spreadsheets/{SS_TOKEN}/values/{DATA_SHEET_ID}!A1:Z500"
     data_res = requests.get(data_url, headers=headers).json()
     rows = data_res.get("data", {}).get("valueRange", {}).get("values", [])
 
     if not rows:
-        print("❌ 错误：读取不到数据，请检查 DATA_SHEET_ID 是否正确。")
+        print("❌ 错误：读取不到数据，请检查 DATA_SHEET_ID 或权限。")
         return
 
     # ---------------------------------------------------------
-    # 🔍 自动化诊断逻辑：打印前 3 行的数据结构
+    # 🔍 核心诊断逻辑：在控制台打印前 3 行的数据索引
     # ---------------------------------------------------------
-    print("\n--- 📝 表格结构诊断开始 ---")
+    print("\n" + "="*40)
+    print("🔍 表格列索引诊断 (请对照下方结果确认索引号)")
+    print("="*40)
     for i, row in enumerate(rows[:3]):
-        print(f"第 {i+1} 行原始数据 (共 {len(row)} 列):")
+        print(f"\n[第 {i+1} 行数据 - 共 {len(row)} 列]:")
         for idx, val in enumerate(row):
-            # 处理可能的富文本链接显示
+            # 简化显示内容
             display_val = val[0].get('text') if isinstance(val, list) and val and isinstance(val[0], dict) else val
-            print(f"  索引 [{idx}] : {display_val}")
-    print("--- 📝 表格结构诊断结束 ---\n")
+            print(f"  索引 [{idx}] : {str(display_val)[:50]}")
+    print("="*40 + "\n")
 
-    # 根据诊断结果，我们需要在这里手动确认索引
-    # 目前先根据你的描述尝试 +1 位的逻辑 (即索引 1, 6, 14)
-    NAME_IDX = 1
-    STATUS_IDX = 6
-    LINK_IDX = 14
+    # --- ！！！请根据上方诊断结果修改这里的数字 ！！！ ---
+    # 如果同步了多维表，索引很可能变了。目前默认使用上次你反馈的 +1 位逻辑。
+    NAME_IDX = 1    # App 名称所在列的索引
+    STATUS_IDX = 6  # Online 状态所在列的索引
+    LINK_IDX = 14   # 链接所在列的索引
+    # --------------------------------------------------
 
     down_list = []
     abnormal_names = []
     online_count = 0
 
-    # 正式开始从第二行检查
+    print(f"开始扫描数据（从第 2 行起）...")
     for row_idx, row in enumerate(rows[1:]):
-        # 补齐长度防止溢出
+        if not row: continue
+        # 补齐长度防止索引越界
         while len(row) <= max(NAME_IDX, STATUS_IDX, LINK_IDX): row.append(None)
         
-        app_name = row[NAME_IDX] or "未命名"
+        app_name = str(row[NAME_IDX] or "未命名")
         status = str(row[STATUS_IDX] or "").strip().lower()
         raw_link = row[LINK_IDX]
 
@@ -110,7 +116,7 @@ def main():
                 down_list.append(f"• {app_name} ({desc})\n链接: {parse_feishu_link(raw_link)}")
 
     # ---------------------------------------------------------
-    # 写入结果
+    # 结果回写
     # ---------------------------------------------------------
     if down_list and TG_BOT_TOKEN:
         msg = f"🚨 <b>Google Play 下架报警</b>\n\n" + "\n\n".join(down_list)
@@ -120,4 +126,24 @@ def main():
     duration = round(time.time() - start_time, 2)
     now_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
     summary = f"监控:{online_count} | 异常:{len(down_list)}"
-    ab_str = ", ".join(abnormal_names) if abnormal_names else "
+    ab_str = ", ".join(abnormal_names) if abnormal_names else "无"
+
+    log_url = f"{DOMAIN_GLOBAL}/open-apis/sheets/v2/spreadsheets/{SS_TOKEN}/values_prepend"
+    log_payload = {
+        "valueRange": {
+            "range": f"{LOG_SHEET_ID}!A2:E2", 
+            "values": [[now_str, "监控完成", summary, f"{duration}s", ab_str]]
+        }
+    }
+    
+    try:
+        res = requests.post(log_url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}, json=log_payload, timeout=20)
+        if res.json().get("code") == 0:
+            print(f"✅ 日志已回写，异常App: {ab_str}")
+    except:
+        print("❌ 日志写入时发生错误")
+
+    print(f"\n🏁 任务圆满结束。统计结果: {summary}")
+
+if __name__ == "__main__":
+    main()
