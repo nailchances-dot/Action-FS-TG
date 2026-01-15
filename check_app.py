@@ -52,30 +52,79 @@ def parse_feishu_link(cell_data):
 # ==========================================
 def check_google_play(raw_link):
     link = parse_feishu_link(raw_link)
-    if not link or "id=" not in link: return True, "跳过"
+    if not link or "id=" not in link:
+        return True, "跳过"
+
     try:
         pkg_match = re.search(r"id=([a-zA-Z0-9._]+)", link)
-        if not pkg_match: return False, "ID错误"
+        if not pkg_match:
+            return False, "ID解析失败"
+
         package_id = pkg_match.group(1)
-        
-        test_url = f"https://play.google.com/store/apps/details?id={package_id}&hl=pt&gl=BR"
+
+        url = f"https://play.google.com/store/apps/details?id={package_id}&hl=pt&gl=BR"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8"
         }
-        res = requests.get(test_url, timeout=25, headers=headers, allow_redirects=True)
-        if res.status_code == 404: return False, "404"
-            
-        content = res.text
-        error_keywords = ["Não encontrado", "não foi encontrado", "URL was not found", "在此服务器上找不到"]
-        for kw in error_keywords:
-            if kw in content: return False, "下架报错"
-        
-        if 'itemprop="name"' in content or 'data-pwa-category="App"' in content:
+
+        res = requests.get(
+            url,
+            headers=headers,
+            timeout=25,
+            allow_redirects=True
+        )
+
+        # 1️⃣ 极端情况：直接 404
+        if res.status_code == 404:
+            return False, "404(不存在)"
+
+        content = res.text.lower()
+
+        # 2️⃣ 明确下架 / 不存在文案（多语言兜底）
+        hard_error_keywords = [
+            "não encontrado",
+            "não foi encontrado",
+            "item não está disponível",
+            "não está disponível",
+            "url was not found",
+            "在此服务器上找不到"
+        ]
+        for kw in hard_error_keywords:
+            if kw in content:
+                return False, "下架(Play文案)"
+
+        # 3️⃣ 安装按钮判断（最核心）
+        install_keywords = [
+            "instalar",
+            "instalar no dispositivo"
+        ]
+        has_install = any(k in content for k in install_keywords)
+
+        # 4️⃣ App 页面结构特征（辅助）
+        has_app_feature = (
+            'itemprop="name"' in content or
+            'data-pwa-category="app"' in content
+        )
+
+        # 5️⃣ 诊断日志（非常重要，建议长期保留）
+        print(
+            f"🧪 页面诊断 | "
+            f"install={has_install} | "
+            f"feature={has_app_feature} | "
+            f"len={len(content)}"
+        )
+
+        # 6️⃣ 最终裁决
+        if has_install and has_app_feature:
             return True, "online"
-        return False, "特征缺失"
-    except:
-        return False, "检测异常"
+
+        # 能访问但无安装按钮 = 下架 / 灰态
+        return False, "下架(无安装按钮)"
+
+    except Exception as e:
+        return False, f"检测异常:{str(e)[:30]}"
+
 
 # ==========================================
 # 4. 主任务
