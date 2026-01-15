@@ -5,7 +5,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 
-# 强制输出立即显示
+# 强制输出即时显示
 sys.stdout.reconfigure(line_buffering=True)
 
 # ==========================================
@@ -75,13 +75,12 @@ def check_google_play(raw_link):
             allow_redirects=True
         )
 
-        # 1️⃣ 极端情况：直接 404
         if res.status_code == 404:
             return False, "404(不存在)"
 
         content = res.text.lower()
 
-        # 2️⃣ 明确下架 / 不存在文案（多语言兜底）
+        # 明确下架 / 不存在文案
         hard_error_keywords = [
             "não encontrado",
             "não foi encontrado",
@@ -94,32 +93,22 @@ def check_google_play(raw_link):
             if kw in content:
                 return False, "下架(Play文案)"
 
-        # 3️⃣ 安装按钮判断（最核心）
-        install_keywords = [
-            "instalar",
-            "instalar no dispositivo"
-        ]
+        # 安装按钮判断
+        install_keywords = ["instalar", "instalar no dispositivo"]
         has_install = any(k in content for k in install_keywords)
 
-        # 4️⃣ App 页面结构特征（辅助）
+        # App 页面结构特征
         has_app_feature = (
             'itemprop="name"' in content or
             'data-pwa-category="app"' in content
         )
 
-        # 5️⃣ 诊断日志（非常重要，建议长期保留）
-        print(
-            f"🧪 页面诊断 | "
-            f"install={has_install} | "
-            f"feature={has_app_feature} | "
-            f"len={len(content)}"
-        )
+        # 诊断日志
+        print(f"🧪 页面诊断 | id={package_id} | install={has_install} | feature={has_app_feature}")
 
-        # 6️⃣ 最终裁决
         if has_install and has_app_feature:
             return True, "online"
 
-        # 能访问但无安装按钮 = 下架 / 灰态
         return False, "下架(无安装按钮)"
 
     except Exception as e:
@@ -137,22 +126,28 @@ def main():
     if not token: return
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
 
-    # 读取大表
-    data_url = f"{DOMAIN_GLOBAL}/open-apis/sheets/v2/spreadsheets/{SS_TOKEN}/values/{DATA_SHEET_ID}!A2:N500"
+    # 【修改1】范围由 A2:N500 扩展到 A2:O500，确保读到偏移后的最后一列
+    data_url = f"{DOMAIN_GLOBAL}/open-apis/sheets/v2/spreadsheets/{SS_TOKEN}/values/{DATA_SHEET_ID}!A2:O500"
     data_res = requests.get(data_url, headers=headers).json()
     rows = data_res.get("data", {}).get("valueRange", {}).get("values", [])
 
-    if not rows: return
+    if not rows:
+        print("⚠️ 未读取到任何行数据")
+        return
 
     down_list = []
-    abnormal_app_names = [] # 记录下架的 App 名字
+    abnormal_app_names = [] 
     online_count = 0
     
     for row in rows:
         if not row: continue
-        while len(row) < 14: row.append(None)
+        # 【修改2】确保行长度至少为 15
+        while len(row) < 15: row.append(None)
         
-        app_name, status, raw_link = row[0] or "未命名", row[5] or "", row[13]
+        # 【修改3】核心索引偏移：原0->1, 原5->6, 原13->14
+        app_name = row[1] or "未命名"
+        status = row[6] or ""
+        raw_link = row[14]
 
         if isinstance(status, str) and status.strip().lower() == "online":
             online_count += 1
@@ -162,7 +157,7 @@ def main():
             is_live, desc = check_google_play(raw_link)
             if not is_live:
                 clean_link = parse_feishu_link(raw_link)
-                abnormal_app_names.append(app_name) # 收集名字用于 E 列
+                abnormal_app_names.append(app_name)
                 down_list.append(f"• {app_name} (原因: {desc})\n链接: {clean_link}")
 
     # 1. Telegram 报警
@@ -171,16 +166,14 @@ def main():
         requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage", 
                       data={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML"})
 
-    # 2. 倒序插入日志 (对齐官方 values_prepend 文档)
+    # 2. 倒序插入日志
     duration = round(time.time() - start_time, 2)
     now_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
     summary = f"监控:{online_count} | 异常:{len(down_list)}"
     abnormal_names_str = ", ".join(abnormal_app_names) if abnormal_app_names else "无"
 
-    # [核心修改] 使用文档要求的 values_prepend 路径
     log_url = f"{DOMAIN_GLOBAL}/open-apis/sheets/v2/spreadsheets/{SS_TOKEN}/values_prepend"
     
-    # 设定范围为 A2:E2。该接口会在 A2 上方“插入”新行，实现倒序排列。
     log_payload = {
         "valueRange": {
             "range": f"{LOG_SHEET_ID}!A2:E2", 
@@ -201,7 +194,7 @@ def main():
     except Exception as e:
         print(f"💥 写入崩溃: {e}")
 
-    print(f"🏁 任务圆满结束。")
+    print(f"🏁 任务圆满结束。{summary}")
 
 if __name__ == "__main__":
     main()
