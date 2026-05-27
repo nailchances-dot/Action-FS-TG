@@ -175,13 +175,13 @@ def check_google_play(raw_link):
         ]
 
         if any(k in content for k in hard_error_keywords):
-            return False, "Play明确下架"
+            return False, "Play页面404，请手动访问链接确认应用状态，如无法访问建议及时暂停广告"
 
         # ==========================================
         # 6. 页面长度异常
         # ==========================================
         if len(content) < 50000:
-            return False, "页面异常过短"
+    return False, "Play页面异常，请手动访问链接确认应用状态，如无法访问建议及时暂停广告"
 
         # ==========================================
         # 7. 默认认为在线
@@ -334,7 +334,7 @@ def main():
     if down_list:
 
         msg = (
-            f"🚨 <b>Google Play 下架报警</b>\n\n"
+            f"📢📢 <b>Google Play 状态提醒🚨</b>\n\n"
             + "\n\n".join(down_list)
         )
 
