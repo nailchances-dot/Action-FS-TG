@@ -3,205 +3,406 @@ import os
 import sys
 import re
 import time
+import random
 from datetime import datetime, timedelta, timezone
 
-# 强制输出立即显示
 sys.stdout.reconfigure(line_buffering=True)
 
 # ==========================================
-# 1. 核心配置
+# 配置
 # ==========================================
 SS_TOKEN = "X8vKsJvDfh4DQgt23m1cMPShn5f"
-DATA_SHEET_ID = "df5ecd" # 大表
-LOG_SHEET_ID = "u4ACeT"  # 日志表 (Sheet 2)
+DATA_SHEET_ID = "df5ecd"
+LOG_SHEET_ID = "u4ACeT"
 
 APP_ID = os.getenv("FEISHU_APP_ID")
 APP_SECRET = os.getenv("FEISHU_APP_SECRET")
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
-# 统一使用全球网关
 DOMAIN_GLOBAL = "https://open.feishu.cn"
 
 # ==========================================
-# 2. 鉴权：获取租户凭证
+# Session（非常重要）
+# ==========================================
+session = requests.Session()
+
+session.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache"
+})
+
+# ==========================================
+# 飞书 Token
 # ==========================================
 def get_tenant_token():
-    print(f"📡 正在获取企业自建应用凭证 (tenant_access_token)...")
+    print("📡 获取 tenant_access_token...")
+
     url = f"{DOMAIN_GLOBAL}/open-apis/auth/v3/tenant_access_token/internal"
-    payload = {"app_id": APP_ID, "app_secret": APP_SECRET}
+
     try:
-        res = requests.post(url, json=payload, timeout=10).json()
+        res = requests.post(
+            url,
+            json={
+                "app_id": APP_ID,
+                "app_secret": APP_SECRET
+            },
+            timeout=15
+        ).json()
+
         if res.get("code") == 0:
             return res.get("tenant_access_token")
-        print(f"❌ 鉴权失败: {res.get('msg')}")
+
+        print(f"❌ 鉴权失败: {res}")
+
     except Exception as e:
-        print(f"💥 鉴权接口异常: {e}")
+        print(f"💥 鉴权异常: {e}")
+
     return None
 
+# ==========================================
+# 飞书链接解析
+# ==========================================
 def parse_feishu_link(cell_data):
-    """提取飞书单元格中的纯链接字符串"""
     if isinstance(cell_data, list) and len(cell_data) > 0:
         item = cell_data[0]
-        if isinstance(item, dict) and 'link' in item:
-            return item['link']
+
+        if isinstance(item, dict):
+            return item.get("link", "")
+
     return str(cell_data) if cell_data else ""
 
 # ==========================================
-# 3. 核心检测逻辑 (针对巴西区优化)
+# 核心检测
 # ==========================================
 def check_google_play(raw_link):
+
     link = parse_feishu_link(raw_link)
+
     if not link or "id=" not in link:
         return True, "跳过"
 
     try:
+
         pkg_match = re.search(r"id=([a-zA-Z0-9._]+)", link)
+
         if not pkg_match:
             return False, "ID解析失败"
 
         package_id = pkg_match.group(1)
 
-        url = f"https://play.google.com/store/apps/details?id={package_id}&hl=pt&gl=BR"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8"
-        }
+        url = (
+            f"https://play.google.com/store/apps/details"
+            f"?id={package_id}&hl=pt_BR&gl=BR"
+        )
 
-        res = requests.get(
+        res = session.get(
             url,
-            headers=headers,
-            timeout=25,
+            timeout=30,
             allow_redirects=True
         )
 
-        # 1️⃣ 极端情况：直接 404
-        if res.status_code == 404:
-            return False, "404(不存在)"
-
         content = res.text.lower()
 
-        # 2️⃣ 明确下架 / 不存在文案（多语言兜底）
-        hard_error_keywords = [
-            "não encontrado",
-            "não foi encontrado",
-            "item não está disponível",
-            "não está disponível",
-            "url was not found",
-            "在此服务器上找不到"
+        # ==========================================
+        # 1. Google 风控检测
+        # ==========================================
+        bot_keywords = [
+            "detected unusual traffic",
+            "our systems have detected",
+            "sorry...",
+            "captcha",
+            "不是机器人",
+            "unusual traffic"
         ]
-        for kw in hard_error_keywords:
-            if kw in content:
-                return False, "下架(Play文案)"
 
-        # 3️⃣ 安装按钮判断（最核心）
-        install_keywords = [
-            "instalar",
-            "instalar no dispositivo"
+        if any(k in content for k in bot_keywords):
+            print(f"⚠️ Google 风控页: {package_id}")
+            return True, "Google风控"
+
+        # ==========================================
+        # 2. 在线特征（核心）
+        # ==========================================
+        online_features = [
+
+            # 页面标题
+            'property="og:title"',
+
+            # app名称
+            'itemprop="name"',
+
+            # Play Store结构
+            'apps no google play',
+
+            # 页面结构
+            'data-item-id='
         ]
-        has_install = any(k in content for k in install_keywords)
 
-        # 4️⃣ App 页面结构特征（辅助）
-        has_app_feature = (
-            'itemprop="name"' in content or
-            'data-pwa-category="app"' in content
+        online_hit = sum(
+            1 for f in online_features if f in content
         )
 
-        # 5️⃣ 诊断日志（非常重要，建议长期保留）
+        # ==========================================
+        # 3. 页面诊断
+        # ==========================================
         print(
-            f"🧪 页面诊断 | "
-            f"install={has_install} | "
-            f"feature={has_app_feature} | "
+            f"🧪 {package_id} | "
+            f"status={res.status_code} | "
+            f"online_features={online_hit} | "
             f"len={len(content)}"
         )
 
-        # 6️⃣ 最终裁决
-        if has_install and has_app_feature:
+        # ==========================================
+        # 4. 在线判断
+        # ==========================================
+        if online_hit >= 2:
             return True, "online"
 
-        # 能访问但无安装按钮 = 下架 / 灰态
-        return False, "下架(无安装按钮)"
+        # ==========================================
+        # 5. 明确下架特征
+        # （放最后）
+        # ==========================================
+        hard_error_keywords = [
+            "url was not found",
+            "item not found",
+            "找不到",
+            "not found"
+        ]
+
+        if any(k in content for k in hard_error_keywords):
+            return False, "Play明确下架"
+
+        # ==========================================
+        # 6. 页面长度异常
+        # ==========================================
+        if len(content) < 50000:
+            return False, "页面异常过短"
+
+        # ==========================================
+        # 7. 默认认为在线
+        # ==========================================
+        return True, "疑似在线"
+
+    except requests.Timeout:
+        return True, "请求超时(忽略)"
 
     except Exception as e:
-        return False, f"检测异常:{str(e)[:30]}"
-
+        return True, f"检测异常:{str(e)[:50]}"
 
 # ==========================================
-# 4. 主任务
+# 二次确认机制
+# ==========================================
+def double_check(raw_link):
+
+    first_live, first_desc = check_google_play(raw_link)
+
+    if first_live:
+        return True, first_desc
+
+    print("🔄 二次确认中...")
+    time.sleep(5)
+
+    second_live, second_desc = check_google_play(raw_link)
+
+    if second_live:
+        return True, "二次恢复"
+
+    return False, second_desc
+
+# ==========================================
+# Telegram
+# ==========================================
+def send_telegram(msg):
+
+    if not TG_BOT_TOKEN:
+        return
+
+    try:
+
+        requests.post(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            data={
+                "chat_id": TG_CHAT_ID,
+                "text": msg,
+                "parse_mode": "HTML"
+            },
+            timeout=20
+        )
+
+    except Exception as e:
+        print(f"TG发送失败: {e}")
+
+# ==========================================
+# 主任务
 # ==========================================
 def main():
+
     start_time = time.time()
-    print(f"🎬 === Google Play 巴西区监控开始 ({datetime.now().strftime('%H:%M:%S')}) ===")
-    
+
+    print(
+        f"\n🎬 ===== Google Play 巴西监控开始 ===== "
+        f"{datetime.now().strftime('%H:%M:%S')}\n"
+    )
+
     token = get_tenant_token()
-    if not token: return
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
 
-    # 读取大表
-    data_url = f"{DOMAIN_GLOBAL}/open-apis/sheets/v2/spreadsheets/{SS_TOKEN}/values/{DATA_SHEET_ID}!A2:N500"
-    data_res = requests.get(data_url, headers=headers).json()
-    rows = data_res.get("data", {}).get("valueRange", {}).get("values", [])
+    if not token:
+        return
 
-    if not rows: return
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json; charset=utf-8"
+    }
+
+    # ==========================================
+    # 读取飞书
+    # ==========================================
+    data_url = (
+        f"{DOMAIN_GLOBAL}/open-apis/sheets/v2/"
+        f"spreadsheets/{SS_TOKEN}/values/"
+        f"{DATA_SHEET_ID}!A2:N500"
+    )
+
+    data_res = requests.get(
+        data_url,
+        headers=headers,
+        timeout=30
+    ).json()
+
+    rows = (
+        data_res.get("data", {})
+        .get("valueRange", {})
+        .get("values", [])
+    )
+
+    if not rows:
+        print("❌ 表格为空")
+        return
 
     down_list = []
-    abnormal_app_names = [] # 记录下架的 App 名字
+    abnormal_names = []
+
     online_count = 0
-    
+
+    # ==========================================
+    # 遍历检测
+    # ==========================================
     for row in rows:
-        if not row: continue
-        while len(row) < 14: row.append(None)
-        
-        app_name, status, raw_link = row[0] or "未命名", row[5] or "", row[13]
 
-        if isinstance(status, str) and status.strip().lower() == "online":
-            online_count += 1
-            print(f"🔍 检查: {app_name}...")
-            time.sleep(1.5)
-            
-            is_live, desc = check_google_play(raw_link)
-            if not is_live:
-                clean_link = parse_feishu_link(raw_link)
-                abnormal_app_names.append(app_name) # 收集名字用于 E 列
-                down_list.append(f"• {app_name} (原因: {desc})\n链接: {clean_link}")
+        if not row:
+            continue
 
-    # 1. Telegram 报警
-    if down_list and TG_BOT_TOKEN:
-        msg = f"🚨 <b>Google Play 下架报警</b>\n\n" + "\n\n".join(down_list)
-        requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage", 
-                      data={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML"})
+        while len(row) < 14:
+            row.append(None)
 
-    # 2. 倒序插入日志 (对齐官方 values_prepend 文档)
+        app_name = row[0] or "未命名"
+        status = str(row[5] or "").strip().lower()
+        raw_link = row[13]
+
+        if status != "online":
+            continue
+
+        online_count += 1
+
+        print(f"\n🔍 检查: {app_name}")
+
+        is_live, desc = double_check(raw_link)
+
+        if not is_live:
+
+            clean_link = parse_feishu_link(raw_link)
+
+            abnormal_names.append(app_name)
+
+            down_list.append(
+                f"• {app_name}\n"
+                f"原因: {desc}\n"
+                f"{clean_link}"
+            )
+
+        # 随机等待（防风控）
+        time.sleep(random.uniform(2.0, 4.0))
+
+    # ==========================================
+    # Telegram报警
+    # ==========================================
+    if down_list:
+
+        msg = (
+            f"🚨 <b>Google Play 下架报警</b>\n\n"
+            + "\n\n".join(down_list)
+        )
+
+        send_telegram(msg)
+
+    # ==========================================
+    # 写日志
+    # ==========================================
     duration = round(time.time() - start_time, 2)
-    now_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
-    summary = f"监控:{online_count} | 异常:{len(down_list)}"
-    abnormal_names_str = ", ".join(abnormal_app_names) if abnormal_app_names else "无"
 
-    # [核心修改] 使用文档要求的 values_prepend 路径
-    log_url = f"{DOMAIN_GLOBAL}/open-apis/sheets/v2/spreadsheets/{SS_TOKEN}/values_prepend"
-    
-    # 设定范围为 A2:E2。该接口会在 A2 上方“插入”新行，实现倒序排列。
+    now_str = datetime.now(
+        timezone(timedelta(hours=8))
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+    summary = (
+        f"监控:{online_count} | "
+        f"异常:{len(down_list)}"
+    )
+
+    abnormal_str = (
+        ", ".join(abnormal_names)
+        if abnormal_names else "无"
+    )
+
+    log_url = (
+        f"{DOMAIN_GLOBAL}/open-apis/sheets/v2/"
+        f"spreadsheets/{SS_TOKEN}/values_prepend"
+    )
+
     log_payload = {
         "valueRange": {
-            "range": f"{LOG_SHEET_ID}!A2:E2", 
-            "values": [
-                [now_str, "监控完成", summary, f"{duration}s", abnormal_names_str]
-            ]
+            "range": f"{LOG_SHEET_ID}!A2:E2",
+            "values": [[
+                now_str,
+                "监控完成",
+                summary,
+                f"{duration}s",
+                abnormal_str
+            ]]
         }
     }
-    
-    print(f"📝 正在通过 values_prepend 倒序插入日志到 {LOG_SHEET_ID}...")
+
     try:
-        response = requests.post(log_url, headers=headers, json=log_payload, timeout=20)
-        log_res = response.json()
+
+        log_res = requests.post(
+            log_url,
+            headers=headers,
+            json=log_payload,
+            timeout=20
+        ).json()
+
         if log_res.get("code") == 0:
-            print(f"✅ 日志已成功插入标题下方第一行。异常名单: {abnormal_names_str}")
+            print("\n✅ 日志写入成功")
         else:
-            print(f"❌ 写入失败: {log_res.get('msg')}")
+            print(f"\n❌ 日志失败: {log_res}")
+
     except Exception as e:
-        print(f"💥 写入崩溃: {e}")
+        print(f"\n💥 日志异常: {e}")
 
-    print(f"🏁 任务圆满结束。")
+    print(
+        f"\n🏁 完成 | "
+        f"监控:{online_count} | "
+        f"异常:{len(down_list)} | "
+        f"耗时:{duration}s\n"
+    )
 
+# ==========================================
+# 启动
+# ==========================================
 if __name__ == "__main__":
     main()
