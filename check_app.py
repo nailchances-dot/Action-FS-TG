@@ -41,11 +41,13 @@ session.headers.update({
 # 飞书 Token
 # ==========================================
 def get_tenant_token():
+
     print("📡 获取 tenant_access_token...")
 
     url = f"{DOMAIN_GLOBAL}/open-apis/auth/v3/tenant_access_token/internal"
 
     try:
+
         res = requests.post(
             url,
             json={
@@ -69,7 +71,9 @@ def get_tenant_token():
 # 飞书链接解析
 # ==========================================
 def parse_feishu_link(cell_data):
+
     if isinstance(cell_data, list) and len(cell_data) > 0:
+
         item = cell_data[0]
 
         if isinstance(item, dict):
@@ -122,7 +126,9 @@ def check_google_play(raw_link):
         ]
 
         if any(k in content for k in bot_keywords):
+
             print(f"⚠️ Google 风控页: {package_id}")
+
             return True, "Google风控"
 
         # ==========================================
@@ -130,16 +136,9 @@ def check_google_play(raw_link):
         # ==========================================
         online_features = [
 
-            # 页面标题
             'property="og:title"',
-
-            # app名称
             'itemprop="name"',
-
-            # Play Store结构
             'apps no google play',
-
-            # 页面结构
             'data-item-id='
         ]
 
@@ -148,7 +147,7 @@ def check_google_play(raw_link):
         )
 
         # ==========================================
-        # 3. 页面诊断
+        # 页面诊断
         # ==========================================
         print(
             f"🧪 {package_id} | "
@@ -158,14 +157,13 @@ def check_google_play(raw_link):
         )
 
         # ==========================================
-        # 4. 在线判断
+        # 在线判断
         # ==========================================
         if online_hit >= 2:
             return True, "online"
 
         # ==========================================
-        # 5. 明确下架特征
-        # （放最后）
+        # 明确404特征
         # ==========================================
         hard_error_keywords = [
             "url was not found",
@@ -175,23 +173,39 @@ def check_google_play(raw_link):
         ]
 
         if any(k in content for k in hard_error_keywords):
-            return False, "Play页面404，请手动访问链接确认应用状态，如无法访问建议及时暂停广告"
+
+            return False, (
+                "Play页面404，请手动访问链接确认应用状态，"
+                "如无法访问建议及时暂停广告"
+            )
 
         # ==========================================
-        # 6. 页面长度异常
+        # 页面长度异常
         # ==========================================
         if len(content) < 50000:
-        return False, "Play页面异常，请手动访问链接确认应用状态，如无法访问建议及时暂停广告"
+
+            print(
+                f"⚠️ 页面长度异常 | "
+                f"pkg={package_id} | "
+                f"len={len(content)}"
+            )
+
+            return False, (
+                "Play页面异常，请手动访问链接确认应用状态，"
+                "如页面无法正常打开建议及时暂停广告"
+            )
 
         # ==========================================
-        # 7. 默认认为在线
+        # 默认认为在线
         # ==========================================
         return True, "疑似在线"
 
     except requests.Timeout:
+
         return True, "请求超时(忽略)"
 
     except Exception as e:
+
         return True, f"检测异常:{str(e)[:50]}"
 
 # ==========================================
@@ -205,6 +219,7 @@ def double_check(raw_link):
         return True, first_desc
 
     print("🔄 二次确认中...")
+
     time.sleep(5)
 
     second_live, second_desc = check_google_play(raw_link)
@@ -281,7 +296,9 @@ def main():
     )
 
     if not rows:
+
         print("❌ 表格为空")
+
         return
 
     down_list = []
