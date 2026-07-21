@@ -318,6 +318,7 @@ def main():
             row.append(None)
 
         app_name = row[0] or "未命名"
+        project_name = row[1] or "未填写项目"
         status = str(row[5] or "").strip().lower()
         raw_link = row[13]
 
@@ -337,7 +338,7 @@ def main():
             abnormal_names.append(app_name)
 
             down_list.append(
-                f"• {app_name}\n"
+                f"（{project_name}）• {app_name}\n"
                 f"原因: {desc}\n"
                 f"{clean_link}"
             )
